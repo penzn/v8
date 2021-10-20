@@ -168,11 +168,48 @@ void SharedTurboAssembler::F64x2ReplaceLane(XMMRegister dst, XMMRegister src,
   }
 }
 
+#define USE_NEW_MINMAX 1
+
 void SharedTurboAssembler::F32x4Min(XMMRegister dst, XMMRegister lhs,
                                     XMMRegister rhs, XMMRegister scratch) {
   ASM_CODE_COMMENT(this);
+#if USE_NEW_MINMAX
+  // Need the following in scratch and dst
+  // scratch: result of minps of two source operands
+  // dst: 11..1 in lanes that have a NaN in either of the sources, 0's in other
+  // dst would serve as an adjustment component to get canonical NaNs
+  if (CpuFeatures::IsSupported(AVX)) {
+    CpuFeatureScope scope(this, AVX);
+    // Propagate rhs if either input is NaN
+    vminps(scratch, lhs, rhs);
+    // Find NaNs in either of the inputs
+    vcmpps(dst, lhs, rhs, 3);
+  } else if (dst == lhs || dst == rhs) {
+    XMMRegister src = dst == lhs ? rhs : lhs;
+    // Copy of src to clobber later
+    movaps(scratch, src);
+    // minps will propagate dst if either input is NaN
+    minps(scratch, dst);
+    // Detect NaN inputs in source operands
+    cmpps(dst, src, 3);
+  } else {
+    // Copy of lhs to clobber
+    movaps(scratch, lhs);
+    // Copy the other value to dst
+    movaps(dst, rhs);
+    // minps propagates rhs (same as dst ATM) if either input is NaN
+    minps(scratch, rhs);
+    // Detect NaN inputs in source operands
+    cmpps(dst, lhs, 3);
+  }
+  // Prepare canonical NaN lanes
+  pslld(dst, 22);
+  // Fix result of minps (for non-NaN lanes add 0)
+  addps(dst, scratch);
+#else
   // The minps instruction doesn't propagate NaNs and +0's in its first
   // operand. Perform minps in both orders, merge the results, and adjust.
+  // scratch and dst are results of minps with opposite order of operands
   if (CpuFeatures::IsSupported(AVX)) {
     CpuFeatureScope scope(this, AVX);
     vminps(scratch, lhs, rhs);
@@ -195,6 +232,7 @@ void SharedTurboAssembler::F32x4Min(XMMRegister dst, XMMRegister lhs,
   Orps(scratch, dst);
   Psrld(dst, dst, byte{10});
   Andnps(dst, dst, scratch);
+#endif
 }
 
 void SharedTurboAssembler::F32x4Max(XMMRegister dst, XMMRegister lhs,
