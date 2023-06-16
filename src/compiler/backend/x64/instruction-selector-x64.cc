@@ -2918,6 +2918,63 @@ void VisitAtomicCompareExchange(InstructionSelectorT<Adapter>* selector,
   selector->Emit(code, arraysize(outputs), outputs, arraysize(inputs), inputs);
 }
 
+static bool TryMatchSimdCompare(Node* node, LaneSize* lane_size) {
+  switch (node->opcode()) {
+    case IrOpcode::kF64x2Le:
+    case IrOpcode::kF64x2Lt:
+    case IrOpcode::kI64x2Eq:
+    case IrOpcode::kI64x2GeS:
+    case IrOpcode::kI64x2GtS:
+    case IrOpcode::kI64x2Ne:
+      *lane_size = kL64;
+      return true;
+    case IrOpcode::kF32x4Eq:
+    case IrOpcode::kF32x4Ge:
+    case IrOpcode::kF32x4Gt:
+    case IrOpcode::kF32x4Le:
+    case IrOpcode::kF32x4Lt:
+    case IrOpcode::kF32x4Ne:
+    case IrOpcode::kI32x4Eq:
+    case IrOpcode::kI32x4GeS:
+    case IrOpcode::kI32x4GeU:
+    case IrOpcode::kI32x4GtS:
+    case IrOpcode::kI32x4GtU:
+    case IrOpcode::kI32x4LeS:
+    case IrOpcode::kI32x4LeU:
+    case IrOpcode::kI32x4LtS:
+    case IrOpcode::kI32x4LtU:
+    case IrOpcode::kI32x4Ne:
+      *lane_size = kL32;
+      return true;
+    case IrOpcode::kI16x8Eq:
+    case IrOpcode::kI16x8GeS:
+    case IrOpcode::kI16x8GeU:
+    case IrOpcode::kI16x8GtS:
+    case IrOpcode::kI16x8GtU:
+    case IrOpcode::kI16x8LeS:
+    case IrOpcode::kI16x8LeU:
+    case IrOpcode::kI16x8LtS:
+    case IrOpcode::kI16x8LtU:
+    case IrOpcode::kI16x8Ne:
+      *lane_size = kL16;
+      return true;
+    case IrOpcode::kI8x16Eq:
+    case IrOpcode::kI8x16GeS:
+    case IrOpcode::kI8x16GeU:
+    case IrOpcode::kI8x16GtS:
+    case IrOpcode::kI8x16GtU:
+    case IrOpcode::kI8x16LeS:
+    case IrOpcode::kI8x16LeU:
+    case IrOpcode::kI8x16LtS:
+    case IrOpcode::kI8x16LtU:
+    case IrOpcode::kI8x16Ne:
+      *lane_size = kL8;
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 // Shared routine for word comparison against zero.
@@ -4083,11 +4140,23 @@ void InstructionSelectorT<Adapter>::VisitV128AnyTrue(Node* node) {
 template <typename Adapter>
 void InstructionSelectorT<Adapter>::VisitS128Select(Node* node) {
   X64OperandGeneratorT<Adapter> g(this);
+  Node* mask_input = node->InputAt(2);
+  LaneSize lane_size;
+  ArchOpcode opcode = kX64SSelect;
+  if (TryMatchSimdCompare(mask_input, &lane_size)) {
+    if (lane_size == kL64) {
+      opcode = kX64Blendvpd;
+    } else if (lane_size == kL32) {
+      opcode = kX64Blendvps;
+    } else  {
+      opcode = kX64Pblendvb;
+    }
+  }
   InstructionOperand dst =
       IsSupported(AVX) ? g.DefineAsRegister(node) : g.DefineSameAsFirst(node);
-  Emit(kX64SSelect | VectorLengthField::encode(kV128), dst,
+  Emit(opcode | VectorLengthField::encode(kV128), dst,
        g.UseRegister(node->InputAt(0)), g.UseRegister(node->InputAt(1)),
-       g.UseRegister(node->InputAt(2)));
+       g.UseRegister(mask_input));
 }
 
 template <typename Adapter>
